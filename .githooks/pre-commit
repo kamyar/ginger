@@ -1,0 +1,4 @@
+#!/bin/bash
+set -euo pipefail
+# Git runs pre-commit hooks from the repository root.
+exec ./scripts/lint.sh

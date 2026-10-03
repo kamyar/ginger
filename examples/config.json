@@ -1,0 +1,24 @@
+{
+  "widgets": [
+    {
+      "id": "codex",
+      "name": "Codex",
+      "enabled": true,
+      "displaySeconds": 10,
+      "refreshSeconds": 300,
+      "environment": {"CODEX_AUTH_FILE": ""}
+    },
+    {
+      "id": "rain",
+      "name": "Weather",
+      "enabled": false,
+      "displaySeconds": 10,
+      "refreshSeconds": 900,
+      "environment": {
+        "LATITUDE": "",
+        "LONGITUDE": "",
+        "RAIN_THRESHOLD": "0.5"
+      }
+    }
+  ]
+}

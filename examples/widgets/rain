@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""Print the next rain or weather change. This script does not need Ginger."""
+
+import argparse
+import json
+import math
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+SYMBOLS = {
+    "Clear": "☀️",
+    "Partly cloudy": "🌤️",
+    "Cloudy": "☁️",
+    "Fog": "🌫️",
+    "Rain": "🌧️",
+    "Snow": "🌨️",
+    "Thunderstorm": "⛈️",
+}
+CODE_GROUPS = {
+    "Clear": [0, 1],
+    "Partly cloudy": [2],
+    "Cloudy": [3],
+    "Fog": [45, 48],
+    "Rain": [51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82],
+    "Snow": [71, 73, 75, 77, 85, 86],
+    "Thunderstorm": [95, 96, 99],
+}
+CONDITIONS = {code: name for name, codes in CODE_GROUPS.items() for code in codes}
+
+
+def number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def settings(latitude, longitude, threshold):
+    try:
+        latitude, longitude = float(latitude), float(longitude)
+    except (ValueError, TypeError):
+        raise ValueError("Set valid LATITUDE and LONGITUDE values.") from None
+    if (
+        not number(latitude)
+        or not -90 <= latitude <= 90
+        or not number(longitude)
+        or not -180 <= longitude <= 180
+    ):
+        raise ValueError("Set valid LATITUDE and LONGITUDE values.")
+    try:
+        threshold = float(threshold)
+    except (ValueError, TypeError):
+        raise ValueError("RAIN_THRESHOLD must be greater than 0 and no greater than 1.") from None
+    if not number(threshold) or not 0 < threshold <= 1:
+        raise ValueError("RAIN_THRESHOLD must be greater than 0 and no greater than 1.")
+    return latitude, longitude, threshold
+
+
+def fetch_forecast(latitude, longitude):
+    query = urllib.parse.urlencode(
+        {
+            "latitude": latitude,
+            "longitude": longitude,
+            "hourly": "precipitation_probability,rain,showers,weather_code",
+            "forecast_days": 2,
+            "timezone": "GMT",
+            "timeformat": "unixtime",
+        }
+    )
+    request = urllib.request.Request(
+        "https://api.open-meteo.com/v1/forecast?" + query,
+        headers={"Accept": "application/json", "User-Agent": "weather-change-script/1.0"},
+    )
+    try:
+        # urllib verifies TLS by default. No login credentials are sent.
+        with urllib.request.urlopen(request, timeout=12) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code == 429:
+            raise ValueError("Open-Meteo is rate limited. Increase the refresh interval.") from None
+        raise ValueError("Open-Meteo request failed with HTTP " + str(error.code) + ".") from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise ValueError("Open-Meteo request failed. Check your network connection.") from None
+    except json.JSONDecodeError:
+        raise ValueError("Open-Meteo returned an invalid forecast.") from None
+
+
+def parse_hours(data):
+    hourly = data.get("hourly") if isinstance(data, dict) else None
+    keys = ["time", "precipitation_probability", "rain", "showers", "weather_code"]
+    if not isinstance(hourly, dict) or not all(isinstance(hourly.get(key), list) for key in keys):
+        raise ValueError("Open-Meteo returned an invalid forecast.")
+    count = len(hourly["time"])
+    if not all(len(hourly[key]) == count for key in keys):
+        raise ValueError("Open-Meteo returned an invalid forecast.")
+    hours = []
+    for date, probability, rain, showers, code in zip(*(hourly[key] for key in keys)):
+        if (
+            not all(number(value) for value in [date, probability, rain, showers])
+            or rain < 0
+            or showers < 0
+        ):
+            raise ValueError("Open-Meteo returned an invalid forecast.")
+        condition = (
+            CONDITIONS.get(code) if isinstance(code, int) and not isinstance(code, bool) else None
+        )
+        hours.append(
+            {
+                "date": date,
+                "probability": probability / 100,
+                "condition": condition,
+                "is_rain": rain > 0 or showers > 0 or condition in ["Rain", "Thunderstorm"],
+            }
+        )
+    return hours
+
+
+def duration(date, now):
+    seconds = max(0, date - now)
+    if seconds == 0:
+        return "Now"
+    return str(math.ceil(seconds / (60 if seconds < 3600 else 3600))) + (
+        "m" if seconds < 3600 else "h"
+    )
+
+
+def format_forecast(data, now=None, threshold=0.5):
+    now = time.time() if now is None else now
+    end = now + 86400
+    hours = sorted(
+        (hour for hour in parse_hours(data) if hour["date"] + 3600 > now and hour["date"] < end),
+        key=lambda hour: hour["date"],
+    )
+    if (
+        not hours
+        or hours[0]["date"] > now
+        or hours[-1]["date"] + 3600 < end
+        or any(hour["condition"] is None or not 0 <= hour["probability"] <= 1 for hour in hours)
+        or any(
+            not 0 < second["date"] - first["date"] <= 3601
+            for first, second in zip(hours, hours[1:])
+        )
+    ):
+        raise ValueError("Open-Meteo did not return a complete 24-hour forecast.")
+    rain = next(
+        (hour for hour in hours if hour["is_rain"] and hour["probability"] >= threshold), None
+    )
+    if rain:
+        probability = math.floor(rain["probability"] * 100 + 0.5)
+        threshold_percent = math.floor(threshold * 100 + 0.5)
+        output = (
+            f"{duration(rain['date'], now)} 🌧️\nHourly rain estimate. "
+            f"Probability: {probability}%. Threshold: {threshold_percent}%."
+        )
+    else:
+        current = hours[0]["condition"]
+        change = next(
+            (
+                hour
+                for hour in hours[1:]
+                if hour["condition"] != current
+                and (not hour["is_rain"] or hour["probability"] >= threshold)
+            ),
+            None,
+        )
+        if change:
+            condition = change["condition"]
+            output = f"{duration(change['date'], now)} {SYMBOLS[condition]}\nHourly weather estimate. {current} → {condition}."
+        else:
+            output = (
+                f"{SYMBOLS[current]} Stable 24h\nCurrent forecast: {current}. "
+                "No qualifying weather change in the next 24 hours."
+            )
+    return output + "\nWeather data: Open-Meteo. https://open-meteo.com/"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--latitude", default=os.environ.get("LATITUDE", os.environ.get("GINGER_LATITUDE", ""))
+    )
+    parser.add_argument(
+        "--longitude", default=os.environ.get("LONGITUDE", os.environ.get("GINGER_LONGITUDE", ""))
+    )
+    parser.add_argument(
+        "--threshold",
+        default=os.environ.get("RAIN_THRESHOLD", os.environ.get("GINGER_RAIN_THRESHOLD", "0.5")),
+    )
+    args = parser.parse_args()
+    try:
+        latitude, longitude, threshold = settings(args.latitude, args.longitude, args.threshold)
+        print(format_forecast(fetch_forecast(latitude, longitude), threshold=threshold))
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

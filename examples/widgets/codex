@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""Print Codex usage. This script does not need Ginger."""
+
+import argparse
+import base64
+import datetime
+import json
+import math
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+AUTH_CLAIM = "https://api.openai.com/auth"
+USAGE_URL = "https://chatgpt.com/backend-api/codex/usage"
+
+
+def number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def jwt_payload(token):
+    if not isinstance(token, str):
+        return {}
+    try:
+        encoded = token.split(".")[1]
+        data = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        payload = json.loads(data)
+        return payload if isinstance(payload, dict) else {}
+    except (ValueError, IndexError, UnicodeError):
+        return {}
+
+
+def credentials(data, now=None):
+    if not isinstance(data, dict):
+        raise ValueError("The Codex login file is invalid.")
+    tokens = data.get("tokens", data.get("openai-codex", data))
+    if not isinstance(tokens, dict):
+        raise ValueError("The Codex login file is invalid.")
+    token = tokens.get("access_token") or tokens.get("access")
+    if not isinstance(token, str) or not token:
+        raise ValueError("No ChatGPT access token was found. An API key cannot report Codex usage.")
+    payload = jwt_payload(token)
+    expiration = payload.get("exp")
+    if expiration is None and number(tokens.get("expires")):
+        expiration = tokens["expires"] / 1000
+    if expiration is not None and not number(expiration):
+        raise ValueError("The Codex login expiration is invalid.")
+    if expiration is not None and expiration <= (time.time() if now is None else now):
+        raise ValueError("The Codex login expired. Sign in again with the tool that created it.")
+    id_payload = jwt_payload(tokens.get("id_token", ""))
+    claim = payload.get(AUTH_CLAIM) or id_payload.get(AUTH_CLAIM) or {}
+    account = tokens.get("account_id") or tokens.get("accountId")
+    if not account and isinstance(claim, dict):
+        account = claim.get("chatgpt_account_id")
+    if not isinstance(account, str) or not account:
+        raise ValueError("The Codex login has no ChatGPT account ID.")
+    return token, account
+
+
+def load_credentials(auth_file=None, home=None, now=None):
+    home = Path.home() if home is None else Path(home)
+    paths = (
+        [Path(auth_file).expanduser()]
+        if auth_file
+        else [home / ".codex/auth.json", home / ".pi/agent/auth.json"]
+    )
+    last_error = None
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            return credentials(json.loads(path.read_text()), now=now)
+        except OSError:
+            last_error = ValueError("Could not read the Codex login file.")
+        except (ValueError, UnicodeError) as error:
+            last_error = (
+                error
+                if type(error) is ValueError
+                else ValueError("The Codex login file is invalid.")
+            )
+    if last_error:
+        raise last_error
+    raise ValueError("No Codex login file was found. Sign in with Codex, or set CODEX_AUTH_FILE.")
+
+
+class ChatGPTRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        destination = urllib.parse.urlsplit(new_url)
+        if destination.scheme != "https" or destination.hostname != "chatgpt.com":
+            raise ValueError("Codex usage returned an unsafe redirect.")
+        return super().redirect_request(request, response, code, message, headers, new_url)
+
+
+def fetch_usage(token, account):
+    request = urllib.request.Request(
+        USAGE_URL,
+        headers={
+            "Authorization": "Bearer " + token,
+            "ChatGPT-Account-Id": account,
+            "originator": "codex-usage-script",
+            "User-Agent": "codex-usage-script/1.0",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        # urllib verifies TLS by default. Keep credentials on ChatGPT if it redirects.
+        opener = urllib.request.build_opener(ChatGPTRedirects())
+        with opener.open(request, timeout=12) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code == 401:
+            raise ValueError(
+                "The Codex login expired. Sign in again with the tool that created it."
+            ) from None
+        if error.code == 429:
+            raise ValueError(
+                "Codex usage is rate limited. Increase the refresh interval."
+            ) from None
+        raise ValueError("Codex usage request failed with HTTP " + str(error.code) + ".") from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise ValueError("Codex usage request failed. Check your network connection.") from None
+    except json.JSONDecodeError:
+        raise ValueError("Codex returned an invalid usage response.") from None
+
+
+def format_usage(data):
+    rate_limit = data.get("rate_limit") if isinstance(data, dict) else None
+    primary = rate_limit.get("primary_window") if isinstance(rate_limit, dict) else None
+    if not isinstance(primary, dict) or not number(primary.get("used_percent")):
+        raise ValueError("The Codex usage response has no primary usage window.")
+    titles, details = [], []
+    for index, window in enumerate([primary, rate_limit.get("secondary_window")]):
+        if not isinstance(window, dict) or not number(window.get("used_percent")):
+            continue
+        left = int(math.floor(max(0, min(100, 100 - window["used_percent"])) + 0.5))
+        seconds = window.get("limit_window_seconds")
+        label = "primary" if index == 0 else "secondary"
+        if number(seconds) and seconds > 0:
+            divisor, unit = (
+                (86400, "d") if seconds >= 86400 else (3600, "h") if seconds >= 3600 else (60, "m")
+            )
+            label = str(int(math.floor(seconds / divisor + 0.5))) + unit
+        reset = "unknown"
+        if number(window.get("reset_at")):
+            try:
+                reset = datetime.datetime.fromtimestamp(window["reset_at"]).strftime("%x %H:%M")
+            except (ValueError, OverflowError, OSError):
+                pass
+        titles.append(f"{label} {left}%")
+        details.append(f"{label}: {left}% left. Reset: {reset}")
+    return "Codex " + " · ".join(titles) + "\n" + "\n".join(details)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--auth-file",
+        default=os.environ.get("CODEX_AUTH_FILE") or os.environ.get("GINGER_CODEX_AUTH_FILE"),
+    )
+    args = parser.parse_args()
+    try:
+        token, account = load_credentials(args.auth_file)
+        print(format_usage(fetch_usage(token, account)))
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

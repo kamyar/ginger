@@ -1,0 +1,19 @@
+included:
+  - Sources
+  - Tests
+
+excluded:
+  - .build
+  - build
+
+line_length:
+  warning: 140
+  error: 200
+
+function_body_length:
+  warning: 70
+  error: 100
+
+type_body_length:
+  warning: 300
+  error: 400
