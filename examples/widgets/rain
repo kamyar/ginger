@@ -186,7 +186,7 @@ def format_forecast(data, now=None, threshold=0.5):
             output = f"{SYMBOLS[current]} Stable 24h\nCurrent: {current}"
     temperature = current_temperature(data)
     title, detail = output.split("\n", 1)
-    return f"{title} · {temperature}\n" + detail + "\nhttps://open-meteo.com/"
+    return f"{title} · {temperature}\n" + detail
 
 
 def main():

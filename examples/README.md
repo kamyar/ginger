@@ -106,4 +106,4 @@ The temperature is current. The countdown and icon refer to the next qualifying 
 
 If no qualifying change appears, it shows the current condition with `Stable 24h`. Condition groups include clear, partly cloudy, cloudy, fog, rain, snow, and thunderstorms. Rain below the probability threshold does not trigger a change.
 
-These are hourly estimates, not guarantees or exact start times. The script credits Open-Meteo with a source link. Ginger shows this link as a separate action, not as a repeated text row.
+These are hourly estimates, not guarantees or exact start times. Open-Meteo provides the weather data. The provider link is in this documentation, not in the widget menu.

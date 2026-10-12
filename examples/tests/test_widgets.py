@@ -406,7 +406,6 @@ class WeatherTests(unittest.TestCase):
                 "3h 🌧️ · 12°C",
                 "Rain probability: 80%",
                 "Rain threshold: 50%",
-                "https://open-meteo.com/",
             ],
         )
         self.assertTrue(
@@ -418,17 +417,18 @@ class WeatherTests(unittest.TestCase):
             lines = weather.format_forecast(data, now=0).splitlines()
             self.assertTrue(all(len(line) <= 48 for line in lines))
             self.assertEqual(sum("12°C" in line for line in lines), 1)
-            self.assertEqual(lines[-1], "https://open-meteo.com/")
+            self.assertTrue(all("http" not in line for line in lines))
         self.assertEqual(
             weather.format_forecast(forecast(code=2, amount=0), now=0).splitlines()[1],
             "Clear → Partly cloudy",
         )
 
-    def test_weather_has_no_data_row_but_keeps_the_source_link(self):
+    def test_weather_has_no_data_row_or_source_link_action(self):
         for data in [forecast(), forecast(rain_at=40), forecast(code=2, amount=0)]:
             output = weather.format_forecast(data, now=0)
             self.assertNotIn("Weather data:", output)
-            self.assertTrue(output.endswith("https://open-meteo.com/"))
+            self.assertNotIn("Open-Meteo", output)
+            self.assertNotIn("http", output)
 
     def test_temperature_rounding_negative_zero_and_fahrenheit(self):
         for value, unit, expected in [
@@ -526,7 +526,7 @@ class WeatherTests(unittest.TestCase):
             ):
                 self.assertEqual(weather.main(), 0)
             self.assertTrue(output.getvalue().startswith("3h 🌧️"))
-            self.assertIn("https://open-meteo.com/", output.getvalue())
+            self.assertNotIn("http", output.getvalue())
 
 
 class InstallerTests(unittest.TestCase):

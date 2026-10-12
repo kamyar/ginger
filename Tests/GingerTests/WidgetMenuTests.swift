@@ -10,13 +10,27 @@ final class WidgetMenuTests: XCTestCase {
             let menu = NSMenu()
             menu.autoenablesItems = false
             let output = ScriptOutput(title: "5h 🌤️ · 10°C", detail:
-                "5h 🌤️ · 10°C\n\nCloudy → Partly cloudy\nhttps://open-meteo.com/")
+                "5h 🌤️ · 10°C\n\nCloudy → Partly cloudy\nhttps://example.org/")
             delegate.addOutputDetails(output, to: menu)
             delegate.addOutputLinks(output, to: menu)
             XCTAssertEqual(menu.items.map(\.title), [
-                "5h 🌤️ · 10°C", "Cloudy → Partly cloudy", "Open open-meteo.com"
+                "5h 🌤️ · 10°C", "Cloudy → Partly cloudy", "Open example.org"
             ])
             XCTAssertTrue(menu.items.prefix(2).allSatisfy { !$0.isEnabled && $0.action == nil })
+        }
+    }
+
+    func testWeatherSummaryDoesNotCreateASourceLinkAction() async {
+        await MainActor.run {
+            let delegate = AppDelegate()
+            let menu = NSMenu()
+            menu.autoenablesItems = false
+            let output = ScriptOutput(title: "5h 🌤️ · 10°C", detail: "5h 🌤️ · 10°C\nCloudy → Partly cloudy")
+            delegate.addOutputDetails(output, to: menu)
+            delegate.addOutputLinks(output, to: menu)
+            XCTAssertEqual(menu.items.map(\.title), ["5h 🌤️ · 10°C", "Cloudy → Partly cloudy"])
+            XCTAssertTrue(output.links.isEmpty)
+            XCTAssertTrue(menu.items.allSatisfy { !$0.isEnabled && $0.action == nil })
         }
     }
 
