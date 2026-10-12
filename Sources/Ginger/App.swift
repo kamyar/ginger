@@ -104,8 +104,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             enabled.state = widget.enabled ? .on : .off
             let show = add("Show now", action: #selector(showWidget(_:)), to: submenu, representedObject: widget.id)
             show.isEnabled = widget.enabled && store.scriptExists(widget.id)
-            submenu.addItem(info(outputs[widget.id]?.detail ?? "No output yet."))
-            if let output = outputs[widget.id] { addOutputLinks(output, to: submenu) }
+            if let output = outputs[widget.id] {
+                addOutputDetails(output, to: submenu)
+                addOutputLinks(output, to: submenu)
+            } else {
+                submenu.addItem(info("No output yet."))
+            }
             if let error = errors[widget.id] { submenu.addItem(info("⚠️ \(error)")) }
             if !store.scriptExists(widget.id) { submenu.addItem(info("Script is missing or is not executable.")) }
             submenu.addItem(.separator())
@@ -141,6 +145,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    func addOutputDetails(_ output: ScriptOutput, to menu: NSMenu) {
+        let links = Set(output.links.map(\.absoluteString))
+        let lines = output.detail.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !links.contains($0) }
+        for line in lines.prefix(8) { menu.addItem(info(line)) }
+        if lines.count > 8 {
+            let more = info("More output…")
+            more.toolTip = output.detail
+            menu.addItem(more)
+        }
+    }
+
     func addOutputLinks(_ output: ScriptOutput, to menu: NSMenu) {
         for url in output.links {
             let item = add("Open \(url.host ?? "link")", action: #selector(openOutputLink(_:)), to: menu,
@@ -155,7 +172,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func info(_ title: String) -> NSMenuItem {
-        let item = NSMenuItem(title: String(title.prefix(240)), action: nil, keyEquivalent: "")
+        let line = title.components(separatedBy: .newlines).joined(separator: " ")
+        let shortened = line.count > 64 ? String(line.prefix(63)) + "…" : line
+        let item = NSMenuItem(title: shortened, action: nil, keyEquivalent: "")
         item.toolTip = title
         item.isEnabled = false
         return item

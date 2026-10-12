@@ -49,11 +49,12 @@ The script can also run without Ginger:
 ### Script output
 
 - The first non-empty stdout line is the menu bar text.
-- Additional stdout lines appear in the widget menu and tooltip.
+- Output lines appear as separate short rows in the widget menu. Long rows have full-text tooltips.
+- Ginger displays up to eight text rows. Additional output remains available in the **More output…** tooltip.
 - HTTP and HTTPS links in the output get menu actions. Ginger does not open them automatically.
 - A nonzero exit status reports an error. Write the error message to stderr.
 
-Keep output short. Ginger limits the title to 80 characters and reads at most 8 KiB of output. On an error, Ginger keeps the last successful output and adds a warning.
+Keep output short. Ginger limits the menu bar title to 80 characters and menu text rows to 64 characters. It reads at most 8 KiB of output. On an error, Ginger keeps the last successful output and adds a warning.
 
 Each execution has a 20-second timeout. Ginger does not run the same widget twice at the same time. Use a shebang, the first script line, to select an interpreter. Use `exec` when a shell script only starts another program.
 

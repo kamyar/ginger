@@ -6,7 +6,10 @@
       "enabled": true,
       "displaySeconds": 10,
       "refreshSeconds": 300,
-      "environment": {"CODEX_AUTH_FILE": ""}
+      "environment": {
+        "CODEX_AUTH_FILE": "",
+        "CODEX_NOTIFY_ON_RESET": "false"
+      }
     },
     {
       "id": "rain",
@@ -17,7 +20,8 @@
       "environment": {
         "LATITUDE": "",
         "LONGITUDE": "",
-        "RAIN_THRESHOLD": "0.5"
+        "RAIN_THRESHOLD": "0.5",
+        "TEMPERATURE_UNIT": "celsius"
       }
     }
   ]

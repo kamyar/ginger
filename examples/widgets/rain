@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print the next rain or weather change. This script does not need Ginger."""
+"""Print the current temperature and next weather change. This script does not need Ginger."""
 
 import argparse
 import json
@@ -57,12 +57,14 @@ def settings(latitude, longitude, threshold):
     return latitude, longitude, threshold
 
 
-def fetch_forecast(latitude, longitude):
+def fetch_forecast(latitude, longitude, temperature_unit="celsius"):
     query = urllib.parse.urlencode(
         {
             "latitude": latitude,
             "longitude": longitude,
             "hourly": "precipitation_probability,rain,showers,weather_code",
+            "current": "temperature_2m",
+            "temperature_unit": temperature_unit,
             "forecast_days": 2,
             "timezone": "GMT",
             "timeformat": "unixtime",
@@ -125,6 +127,17 @@ def duration(date, now):
     )
 
 
+def current_temperature(data):
+    current = data.get("current") if isinstance(data, dict) else None
+    units = data.get("current_units") if isinstance(data, dict) else None
+    temperature = current.get("temperature_2m") if isinstance(current, dict) else None
+    unit = units.get("temperature_2m") if isinstance(units, dict) else None
+    if not number(temperature) or unit not in ["°C", "°F"]:
+        raise ValueError("Open-Meteo did not return a valid current temperature.")
+    rounded = int(math.copysign(math.floor(abs(temperature) + 0.5), temperature))
+    return str(rounded) + unit
+
+
 def format_forecast(data, now=None, threshold=0.5):
     now = time.time() if now is None else now
     end = now + 86400
@@ -150,8 +163,8 @@ def format_forecast(data, now=None, threshold=0.5):
         probability = math.floor(rain["probability"] * 100 + 0.5)
         threshold_percent = math.floor(threshold * 100 + 0.5)
         output = (
-            f"{duration(rain['date'], now)} 🌧️\nHourly rain estimate. "
-            f"Probability: {probability}%. Threshold: {threshold_percent}%."
+            f"{duration(rain['date'], now)} 🌧️\nRain probability: {probability}%"
+            f"\nRain threshold: {threshold_percent}%"
         )
     else:
         current = hours[0]["condition"]
@@ -166,13 +179,14 @@ def format_forecast(data, now=None, threshold=0.5):
         )
         if change:
             condition = change["condition"]
-            output = f"{duration(change['date'], now)} {SYMBOLS[condition]}\nHourly weather estimate. {current} → {condition}."
-        else:
             output = (
-                f"{SYMBOLS[current]} Stable 24h\nCurrent forecast: {current}. "
-                "No qualifying weather change in the next 24 hours."
+                f"{duration(change['date'], now)} {SYMBOLS[condition]}\n{current} → {condition}"
             )
-    return output + "\nWeather data: Open-Meteo. https://open-meteo.com/"
+        else:
+            output = f"{SYMBOLS[current]} Stable 24h\nCurrent: {current}"
+    temperature = current_temperature(data)
+    title, detail = output.split("\n", 1)
+    return f"{title} · {temperature}\n" + detail + "\nhttps://open-meteo.com/"
 
 
 def main():
@@ -187,10 +201,18 @@ def main():
         "--threshold",
         default=os.environ.get("RAIN_THRESHOLD", os.environ.get("GINGER_RAIN_THRESHOLD", "0.5")),
     )
+    parser.add_argument(
+        "--temperature-unit",
+        choices=["celsius", "fahrenheit"],
+        default=os.environ.get("TEMPERATURE_UNIT", "celsius"),
+    )
     args = parser.parse_args()
     try:
         latitude, longitude, threshold = settings(args.latitude, args.longitude, args.threshold)
-        print(format_forecast(fetch_forecast(latitude, longitude), threshold=threshold))
+        if args.temperature_unit not in ["celsius", "fahrenheit"]:
+            raise ValueError("TEMPERATURE_UNIT must be celsius or fahrenheit.")
+        data = fetch_forecast(latitude, longitude, args.temperature_unit)
+        print(format_forecast(data, threshold=threshold))
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 1

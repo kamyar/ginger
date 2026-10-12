@@ -4,10 +4,13 @@
 import argparse
 import base64
 import datetime
+import hashlib
 import json
 import math
 import os
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -127,6 +130,101 @@ def fetch_usage(token, account):
         raise ValueError("Codex returned an invalid usage response.") from None
 
 
+def window_label(window, index):
+    seconds = window.get("limit_window_seconds")
+    if number(seconds) and seconds > 0:
+        divisor, unit = (
+            (86400, "d") if seconds >= 86400 else (3600, "h") if seconds >= 3600 else (60, "m")
+        )
+        return str(int(math.floor(seconds / divisor + 0.5))) + unit
+    return "primary" if index == 0 else "secondary"
+
+
+NOTIFICATION_SCRIPT = """on run argv
+    display notification (item 1 of argv) with title "Codex limit reset"
+end run"""
+
+
+def notify_reset(labels):
+    message = " and ".join(labels) + " usage window reset."
+    subprocess.run(
+        ["/usr/bin/osascript", "-e", NOTIFICATION_SCRIPT, message],
+        check=True,
+        capture_output=True,
+        timeout=5,
+    )
+
+
+def process_resets(data, account, state_file, notify=False, now=None):
+    now = time.time() if now is None else now
+    windows = {}
+    for index, key in enumerate(["primary_window", "secondary_window"]):
+        window = data["rate_limit"].get(key)
+        if not isinstance(window, dict) or not number(window.get("used_percent")):
+            continue
+        reset = window.get("reset_at")
+        seconds = window.get("limit_window_seconds")
+        if number(reset) and number(seconds) and seconds > 0:
+            windows[key] = {
+                "reset_at": reset,
+                "seconds": seconds,
+                "label": window_label(window, index),
+            }
+    current = {
+        "account_hash": hashlib.sha256(account.encode()).hexdigest(),
+        "checked_at": now,
+        "notifications_enabled": notify,
+        "windows": windows,
+    }
+    path = Path(state_file).expanduser()
+    try:
+        previous = json.loads(path.read_text())
+    except (OSError, ValueError, UnicodeError):
+        previous = None
+    labels = []
+    if (
+        notify
+        and isinstance(previous, dict)
+        and previous.get("notifications_enabled") is True
+        and previous.get("account_hash") == current["account_hash"]
+        and number(previous.get("checked_at"))
+        and previous["checked_at"] <= now
+        and isinstance(previous.get("windows"), dict)
+    ):
+        for key, window in windows.items():
+            old = previous["windows"].get(key)
+            if (
+                isinstance(old, dict)
+                and number(old.get("reset_at"))
+                and old.get("seconds") == window["seconds"]
+                and previous["checked_at"] < old["reset_at"] <= now < window["reset_at"]
+            ):
+                labels.append(window["label"])
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=path.parent, prefix=".usage-", delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(current, handle)
+            handle.write("\n")
+        try:
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    except OSError:
+        print("Could not save Codex reset notification state.", file=sys.stderr)
+        return
+    if labels:
+        try:
+            notify_reset(labels)
+        except (OSError, subprocess.SubprocessError):
+            print(
+                "Could not send the Codex reset notification. Check macOS notification settings.",
+                file=sys.stderr,
+            )
+
+
 def format_usage(data):
     rate_limit = data.get("rate_limit") if isinstance(data, dict) else None
     primary = rate_limit.get("primary_window") if isinstance(rate_limit, dict) else None
@@ -137,13 +235,7 @@ def format_usage(data):
         if not isinstance(window, dict) or not number(window.get("used_percent")):
             continue
         left = int(math.floor(max(0, min(100, 100 - window["used_percent"])) + 0.5))
-        seconds = window.get("limit_window_seconds")
-        label = "primary" if index == 0 else "secondary"
-        if number(seconds) and seconds > 0:
-            divisor, unit = (
-                (86400, "d") if seconds >= 86400 else (3600, "h") if seconds >= 3600 else (60, "m")
-            )
-            label = str(int(math.floor(seconds / divisor + 0.5))) + unit
+        label = window_label(window, index)
         reset = "unknown"
         if number(window.get("reset_at")):
             try:
@@ -161,10 +253,26 @@ def main():
         "--auth-file",
         default=os.environ.get("CODEX_AUTH_FILE") or os.environ.get("GINGER_CODEX_AUTH_FILE"),
     )
+    parser.add_argument(
+        "--notify-on-reset",
+        action=argparse.BooleanOptionalAction,
+        default=os.environ.get("CODEX_NOTIFY_ON_RESET", "false").strip().lower()
+        in ["1", "true", "yes", "on"],
+        help="Send a macOS notification when a usage window resets between successful checks.",
+    )
+    parser.add_argument(
+        "--state-file",
+        default=os.environ.get("CODEX_STATE_FILE")
+        or str(Path.home() / "Library/Caches/codex-usage/usage.json"),
+        help="Store the last successful reset check outside the login file.",
+    )
     args = parser.parse_args()
     try:
         token, account = load_credentials(args.auth_file)
-        print(format_usage(fetch_usage(token, account)))
+        data = fetch_usage(token, account)
+        output = format_usage(data)
+        process_resets(data, account, args.state_file, notify=args.notify_on_reset)
+        print(output)
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 1
